@@ -21,9 +21,10 @@ pub const DynamicDirectory = struct {
     fallback: Fallback,
 };
 
-pub const VFSError = error{
+pub const ContentError = error{
     invalid_path,
     duplicate_mapping,
+    no_such_directory,
 };
 
 const FallbackImpl = union(enum) {
@@ -38,7 +39,6 @@ const Directory = struct {
 
 const Node = struct {
     name: []const u8,
-    active: bool = true,
     last_child: ?*Node = null,
     prev_sibling: ?*Node = null,
     directory: ?*Directory = null,
@@ -77,11 +77,7 @@ pub const ServerContent = struct {
             if (i == ei or path[i] == '/') {
                 const name = path[si..i];
                 if (self.findChild(parent, name)) |child| {
-                    if (child.active) {
-                        parent = child;
-                    } else {
-                        break;
-                    }
+                    parent = child;
                 } else {
                     break;
                 }
@@ -106,7 +102,6 @@ pub const ServerContent = struct {
             if (i == ei or path[i] == '/') {
                 const name = path[si..i];
                 if (self.findChild(parent, name)) |child| {
-                    child.active = true;
                     parent = child;
                 } else {
                     if (parent) |p| {
@@ -123,7 +118,7 @@ pub const ServerContent = struct {
         }
         if (parent) |p| {
             if (p.directory) |_| {
-                return VFSError.duplicate_mapping;
+                return ContentError.duplicate_mapping;
             } else {
                 const directory = try self.allocator.create(Directory);
                 directory.* = .{ .is_dynamic = @TypeOf(arg) == DynamicDirectory };
@@ -141,8 +136,16 @@ pub const ServerContent = struct {
                 p.directory = directory;
             }
         } else {
-            return VFSError.invalid_path;
+            return ContentError.invalid_path;
         }
+    }
+
+    fn getPath(uri: []const u8) []const u8 {
+        return for (uri, 0..) |c, index| {
+            if (c == '?') {
+                break uri[0..index];
+            }
+        } else uri;
     }
 
     fn findChild(self: *const @This(), parent: ?*Node, name: []const u8) ?*Node {
@@ -162,12 +165,14 @@ pub const ServerContent = struct {
         var child = node.last_child;
         self.allocator.free(node.name);
         while (child != null) {
-            const prev_sibling = child.prev_sibling;
+            const prev_sibling = child.?.prev_sibling;
             self.freeNode(child.?);
             child = prev_sibling;
         }
         if (node.directory) |d| {
-            self.allocator.free(d.fs_path);
+            if (d.fs_path) |fp| {
+                self.allocator.free(fp);
+            }
             self.allocator.destroy(d);
         }
         self.allocator.destroy(node);
@@ -189,12 +194,10 @@ test "ServerContent.addDirectory" {
     assert(first.prev_sibling == null);
     assert(first.last_child != null);
     assert(first.directory == null);
-    assert(first.active == true);
     const second = first.last_child.?;
     assert(second.prev_sibling == null);
     assert(second.last_child == null);
     assert(second.directory != null);
-    assert(second.active == true);
     assert(std.mem.eql(u8, second.directory.?.fs_path.?, "/home/website/hello"));
     assert(second.directory.?.is_dynamic == false);
     const s2: DynamicDirectory = .{
@@ -210,7 +213,6 @@ test "ServerContent.addDirectory" {
     assert(third.prev_sibling.? == second);
     assert(third.last_child == null);
     assert(third.directory != null);
-    assert(third.active == true);
     assert(std.mem.eql(u8, third.directory.?.fs_path.?, "/tmp/cache"));
     assert(third.directory.?.is_dynamic == true);
     assert(third.directory.?.fallback != null);
@@ -244,4 +246,33 @@ test "ServerContent.findDirectory" {
     assert(result1 != null);
     assert(std.mem.eql(u8, result1.?.directory.fs_path.?, "/home/website/hello"));
     assert(std.mem.eql(u8, result1.?.path, "chicken"));
+    const result2 = content.findDirectory("/hello/kitty/something/else/index");
+    assert(result2 != null);
+    assert(std.mem.eql(u8, result2.?.directory.fs_path.?, "/tmp/cache"));
+    assert(std.mem.eql(u8, result2.?.path, "something/else/index"));
+    const result3 = content.findDirectory("/hello");
+    assert(result3 == null);
+    const result4 = content.findDirectory("/hello/dingo");
+    assert(result4 == null);
+}
+
+test "ServerContent.deinit" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+    var content = try ServerContent.init(allocator);
+    const s1: StaticDirectory = .{
+        .path = "/hello/world",
+        .fs_path = "/home/website/hello",
+    };
+    try content.addDirectory(s1);
+    const s2: DynamicDirectory = .{
+        .path = "/hello/kitty/",
+        .fs_path = "/tmp/cache",
+        .fallback = .{
+            .location = .{ .ip = "127.0.0.1", .port = 8000 },
+        },
+    };
+    try content.addDirectory(s2);
+    content.deinit();
+    assert(gpa.detectLeaks() == false);
 }
