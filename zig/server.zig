@@ -2,8 +2,7 @@ const std = @import("std");
 
 const ServerThread = @import("./thread.zig").ServerThread;
 const ServerContent = @import("./content.zig").ServerContent;
-const StaticDirectory = @import("./content.zig").StaticDirectory;
-const DynamicDirectory = @import("./content.zig").DynamicDirectory;
+const Directory = @import("./content.zig").Directory;
 
 const Server = struct {
     threads: []ServerThread,
@@ -74,12 +73,7 @@ pub fn stopServer(opaque_ptr: ServerOpaquePointer) void {
     allocator.destroy(server);
 }
 
-pub fn addStaticDirectory(opaque_ptr: ServerOpaquePointer, dir: StaticDirectory) !void {
-    const server: *Server = @ptrCast(opaque_ptr);
-    server.content.addDirectory(dir);
-}
-
-pub fn addDynamicDirectory(opaque_ptr: ServerOpaquePointer, dir: DynamicDirectory) !void {
+pub fn addDirectory(opaque_ptr: ServerOpaquePointer, dir: Directory) !void {
     const server: *Server = @ptrCast(opaque_ptr);
     server.content.addDirectory(dir);
 }
